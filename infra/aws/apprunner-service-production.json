@@ -1,0 +1,35 @@
+{
+  "ServiceName": "black-litterman-rag-production",
+  "SourceConfiguration": {
+    "ImageRepository": {
+      "ImageIdentifier": "<aws_account_id>.dkr.ecr.<region>.amazonaws.com/black-litterman-rag-backend:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "8000",
+        "RuntimeEnvironmentVariables": {
+          "APP_ENV": "production",
+          "CORS_ORIGINS": "https://<vercel-production-domain>",
+          "GROQ_MODEL": "llama-3.3-70b-versatile",
+          "MAX_REQUEST_SIZE_BYTES": "1048576",
+          "RATE_LIMIT_PER_MINUTE": "60"
+        },
+        "RuntimeEnvironmentSecrets": {
+          "GROQ_API_KEY": "arn:aws:secretsmanager:<region>:<account_id>:secret:<secret_name>"
+        }
+      }
+    },
+    "AutoDeploymentsEnabled": true
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  },
+  "InstanceConfiguration": {
+    "Cpu": "1 vCPU",
+    "Memory": "2 GB"
+  }
+}

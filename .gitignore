@@ -1,0 +1,13 @@
+.DS_Store
+Thumbs.db
+
+backend/.venv/
+backend/__pycache__/
+backend/.env
+backend/rag_index/
+
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+.cursor/

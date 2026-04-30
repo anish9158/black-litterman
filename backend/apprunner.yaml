@@ -1,0 +1,18 @@
+version: 1.0
+runtime: docker
+build:
+  commands:
+    build:
+      - docker build -t black-litterman-rag-backend .
+run:
+  command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+  network:
+    port: 8000
+    env: PORT
+  env:
+    - name: APP_ENV
+      value: production
+    - name: CORS_ORIGINS
+      value: https://your-vercel-domain.vercel.app
+    - name: GROQ_MODEL
+      value: llama-3.3-70b-versatile
