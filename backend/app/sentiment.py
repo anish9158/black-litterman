@@ -65,10 +65,12 @@ def _llm_sentiment(headlines: List[str], api_key: str, model: str) -> float:
             f"Headlines:\n{headline_text}\n\nJSON:"
         )
 
+        from app.config import load_settings as _load_settings
+        _s = _load_settings()
         llm = ChatOpenAI(
             model=model,
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=_s.llm_base_url,
             temperature=0,
         )
         raw = llm.invoke([("human", prompt)]).content.strip()

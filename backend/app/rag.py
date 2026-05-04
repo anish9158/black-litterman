@@ -88,7 +88,8 @@ STRICT RULES — follow every one of them without exception:
 3. If the question is unrelated to this project (e.g. weather, sports, cooking, current events, general knowledge), reply with exactly: "I can only answer questions about this Black-Litterman portfolio project."
 4. If the answer is not in the retrieved context, say: "This information is not in my knowledge base."
 5. Never speculate, hallucinate, or provide information not supported by the retrieved context.
-6. Be concise and analytical. Do NOT include a "Sources:" section in your answer — sources are displayed separately in the UI.
+6. Be concise and analytical. Do NOT include a "Sources:" section — sources appear separately in the UI.
+7. Format answers for Markdown rendering in the frontend: use **bold** for key terms (not asterisks as plain symbols where bold is intended). Use $inline math$ for short formulas or \\(...\\), and $$...$$ for display equations instead of unreadable escapes.
 """
 
 NOTEBOOK_OVERVIEW = textwrap.dedent("""
@@ -270,16 +271,25 @@ def _fallback_answer(question: str, docs: List[Document]) -> str:
 
 
 def _build_rich_sources(docs_with_scores: List[tuple]) -> List[Dict[str, Any]]:
-    """Convert (Document, score) pairs into rich source dicts for the frontend."""
+    """
+    Convert (Document, distance) pairs from FAISS similarity_search_with_score.
+
+    LangChain's default IndexFlatL2 returns squared L2 distance in embedding space —
+    smaller values mean vectors are closer → better semantic match to the query.
+    """
     out = []
-    for doc, score in docs_with_scores:
+    for doc, raw in docs_with_scores:
         preview = doc.page_content[:220].strip().replace("\n", " ")
+        d = float(raw)
         out.append({
             "source": doc.metadata.get("source", "unknown"),
             "category": doc.metadata.get("category", "notebook"),
             "preview": preview,
             "char_count": len(doc.page_content),
-            "score": round(float(score), 4),
+            "score": round(d, 4),
+            "l2_distance": round(d, 4),
+            "metric": "faiss_embedding_distance",
+            "interpretation": "FAISS L2 embedding distance returned by LangChain (lower = closer to the query embedding).",
         })
     return out
 
@@ -292,7 +302,7 @@ def _generate_follow_ups(answer: str, question: str, api_key: str) -> List[str]:
         llm = ChatOpenAI(
             model=settings.groq_model,
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=settings.llm_base_url,
             temperature=0.4,
         )
         prompt = (
@@ -364,7 +374,7 @@ def ask_rag(
         llm = ChatOpenAI(
             model=settings.groq_model,
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=settings.llm_base_url,
             temperature=0,
         )
         msg = llm.invoke(
@@ -470,7 +480,7 @@ def generate_narrative(
         llm = ChatOpenAI(
             model=settings.groq_model,
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=settings.llm_base_url,
             temperature=0.3,
         )
         return llm.invoke([("human", prompt)]).content
@@ -538,7 +548,7 @@ def ask_rag_stream(
     llm = ChatOpenAI(
         model=settings.groq_model,
         api_key=api_key,
-        base_url="https://api.groq.com/openai/v1",
+        base_url=settings.llm_base_url,
         temperature=0,
         streaming=True,
     )

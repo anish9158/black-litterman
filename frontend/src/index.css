@@ -35,3 +35,11 @@
   ::-webkit-scrollbar-track { @apply bg-transparent; }
   ::-webkit-scrollbar-thumb { @apply bg-border rounded-full; }
 }
+
+/* KaTeX readable on dark backgrounds */
+.markdown-body .katex {
+  color: hsl(210 40% 92%);
+}
+.markdown-body .katex .mord.text {
+  color: inherit;
+}

@@ -10,12 +10,21 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def _detect_base_url(api_key: str) -> str:
+    """Auto-detect the LLM API base URL from the key prefix."""
+    if api_key.startswith("sk-or-"):
+        return "https://openrouter.ai/api/v1"
+    # Default: Groq
+    return "https://api.groq.com/openai/v1"
+
+
 @dataclass(frozen=True)
 class Settings:
     env: str
     cors_origins: list[str]
     groq_api_key: str
     groq_model: str
+    llm_base_url: str
     max_request_size_bytes: int
     rate_limit_per_minute: int
 
@@ -28,11 +37,14 @@ def load_settings() -> Settings:
     env = os.getenv("APP_ENV", "development")
     cors_value = os.getenv("CORS_ORIGINS", "")
     cors_origins = _split_csv(cors_value) if cors_value else ["http://localhost:5173"]
+    api_key = os.getenv("GROQ_API_KEY", "")
+    base_url = os.getenv("LLM_BASE_URL", "") or _detect_base_url(api_key)
     return Settings(
         env=env,
         cors_origins=cors_origins,
-        groq_api_key=os.getenv("GROQ_API_KEY", ""),
+        groq_api_key=api_key,
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        llm_base_url=base_url,
         max_request_size_bytes=int(os.getenv("MAX_REQUEST_SIZE_BYTES", str(1_048_576))),
         rate_limit_per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "60")),
     )

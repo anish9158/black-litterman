@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
+import ChatMarkdown from "@/components/ChatMarkdown";
 import { cn } from "@/lib/utils";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -80,35 +81,53 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit): Pr
   }
 }
 
+/** FAISS L2 embedding distance among this batch — lower = closer semantic match */
+function relevanceBarPct(batchDistances: number[], d: number): number {
+  if (batchDistances.length === 0) return 50;
+  const mn = Math.min(...batchDistances);
+  const mx = Math.max(...batchDistances);
+  if (mx <= mn + 1e-8) return 100;
+  return Math.round(Math.max(4, Math.min(100, (100 * (mx - d)) / (mx - mn))));
+}
+
 function SourcesPanel({ sources }: { sources: Source[] }) {
   const [open, setOpen] = useState(false);
   if (!sources.length) return null;
+  const distances = sources.map((s) => s.score);
   return (
     <div className="mt-2 rounded-md border border-border bg-muted/20 text-xs">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-muted-foreground hover:text-foreground transition-colors"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-muted-foreground hover:text-foreground transition-colors text-left"
       >
         {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
         <span>Sources used ({sources.length})</span>
       </button>
       {open && (
-        <div className="px-3 pb-3 flex flex-col gap-2">
+        <div className="flex flex-col gap-2 px-3 pb-3">
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            Retrieval distance is the FAISS L2 embedding distance (same value LangChain exposes as score). Lower
+            numbers mean the chunk embedding is nearer to your question — a stronger semantic match among the retrieved
+            set.
+          </p>
           {sources.map((s, i) => (
             <div key={i} className="flex flex-col gap-0.5">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-indigo-400">{s.source}</span>
                 <Badge variant="outline" className="text-[9px] px-1 py-0">{s.category}</Badge>
-                <span className="ml-auto text-muted-foreground">score: {s.score.toFixed(3)}</span>
+                <span className="ml-auto whitespace-nowrap text-muted-foreground font-mono" title="Embedding L2 distance (lower is better match)">
+                  L²&nbsp;distance: <span className="text-foreground">{s.score.toFixed(4)}</span>
+                </span>
               </div>
-              {/* Relevance bar */}
-              <div className="h-1 w-full rounded-full bg-muted overflow-hidden">
+              {/* Relative relevance within this retrieval batch */}
+              <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
                 <div
                   className="h-full rounded-full bg-indigo-500"
-                  style={{ width: `${Math.max(5, Math.min(100, (1 - s.score) * 120))}%` }}
+                  title="Relative similarity within this retrieval batch (full bar = closest match)"
+                  style={{ width: `${relevanceBarPct(distances, s.score)}%` }}
                 />
               </div>
-              <p className="text-muted-foreground line-clamp-2">{s.preview}</p>
+              <p className="line-clamp-2 text-muted-foreground">{s.preview}</p>
             </div>
           ))}
         </div>
@@ -318,7 +337,11 @@ export default function Chat({ threadId: _threadId }: { threadId: string }) {
                 )}
               >
                 {msg.text ? (
-                  <pre className="whitespace-pre-wrap font-sans">{msg.text}</pre>
+                  msg.role === "assistant" ? (
+                    <ChatMarkdown text={msg.text} />
+                  ) : (
+                    <pre className="font-sans whitespace-pre-wrap">{msg.text}</pre>
+                  )
                 ) : loading && i === messages.length - 1 ? (
                   <div className="flex gap-1 items-center py-1">
                     <Skeleton className="h-3 w-24" />

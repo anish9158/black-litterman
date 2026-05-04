@@ -298,7 +298,7 @@ def nl_optimize(req: NLOptimizeRequest, _: None = Depends(enforce_rate_limit)):
         llm = ChatOpenAI(
             model=settings.groq_model,
             api_key=api_key,
-            base_url="https://api.groq.com/openai/v1",
+            base_url=settings.llm_base_url,
             temperature=0,
         )
         system = (
