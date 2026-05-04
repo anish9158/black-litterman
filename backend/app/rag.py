@@ -131,11 +131,35 @@ def read_file(path: Path) -> List[Document]:
 
 
 def load_documents() -> List[Document]:
+    """
+    Load documents from rag_docs/ with automatic category tagging.
+
+    Subdirectory structure is used to set a 'category' metadata field:
+      rag_docs/                    → category=notebook
+      rag_docs/market_reports/     → category=market_report
+      rag_docs/company_filings/    → category=company_filing
+      rag_docs/sector_research/    → category=sector_research
+      (any other subdir name)      → category=<subdir name>
+    """
     RAG_DOCS_DIR.mkdir(parents=True, exist_ok=True)
-    docs = [Document(page_content=NOTEBOOK_OVERVIEW, metadata={"source": "app_overview"})]
+
+    docs = [Document(
+        page_content=NOTEBOOK_OVERVIEW,
+        metadata={"source": "app_overview", "category": "notebook"},
+    )]
+
     for path in sorted(RAG_DOCS_DIR.rglob("*")):
-        if path.is_file():
-            docs.extend(read_file(path))
+        if not path.is_file():
+            continue
+        # Determine category from parent directory relative to rag_docs/
+        rel = path.relative_to(RAG_DOCS_DIR)
+        category = rel.parts[0] if len(rel.parts) > 1 else "notebook"
+
+        file_docs = read_file(path)
+        for doc in file_docs:
+            doc.metadata.setdefault("category", category)
+        docs.extend(file_docs)
+
     return docs
 
 
@@ -241,3 +265,130 @@ def ask_rag(
 
     updated_history = history + [{"user": question, "assistant": answer}]
     return {"answer": answer, "sources": sources, "history": updated_history}
+
+
+# ---------------------------------------------------------------------------
+# LLM Portfolio Narrative
+# ---------------------------------------------------------------------------
+
+def generate_narrative(
+    allocation: List[Dict[str, Any]],
+    metrics: Dict[str, float],
+    tickers: List[str],
+) -> str:
+    """
+    Use the Groq LLM to produce a concise, human-readable portfolio explanation.
+    Returns empty string if no API key is available or if the call fails.
+    """
+    api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
+    if not (api_key and ChatOpenAI):
+        return ""
+
+    top_holdings = sorted(allocation, key=lambda x: -x.get("weight", 0))[:5]
+    alloc_str = ", ".join(
+        f"{a['ticker']} ({a.get('weight', 0):.1%})" for a in top_holdings
+    )
+    benchmark_return = metrics.get("benchmark_annual_return", None)
+    port_return = metrics.get("annual_return", None)
+    sharpe = metrics.get("sharpe_ratio", None)
+    max_dd = metrics.get("max_drawdown", None)
+
+    metric_lines = []
+    if port_return is not None:
+        metric_lines.append(f"Annual return: {port_return:+.2%}")
+    if benchmark_return is not None:
+        outperf = (port_return or 0) - benchmark_return
+        metric_lines.append(f"Benchmark (NIFTY 50): {benchmark_return:+.2%} (portfolio outperforms by {outperf:+.2%})")
+    if sharpe is not None:
+        metric_lines.append(f"Sharpe ratio: {sharpe:.3f}")
+    if max_dd is not None:
+        metric_lines.append(f"Max drawdown: {max_dd:.2%}")
+
+    prompt = (
+        "You are a concise quantitative portfolio analyst. In 3-4 sentences explain this "
+        "Black-Litterman optimised portfolio to a non-technical investor. Be specific with numbers.\n\n"
+        f"Top holdings: {alloc_str}\n"
+        + "\n".join(metric_lines)
+        + "\n\nExplain: (1) what drove the allocation, (2) what the return and risk numbers mean, "
+        "(3) whether it beat the NIFTY 50 benchmark. Keep it under 120 words. No bullet points."
+    )
+
+    try:
+        llm = ChatOpenAI(
+            model=settings.groq_model,
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            temperature=0.3,
+        )
+        return llm.invoke([("human", prompt)]).content
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Streaming RAG (SSE)
+# ---------------------------------------------------------------------------
+
+def ask_rag_stream(
+    question: str,
+    k: int = 5,
+    history: Optional[List[Dict[str, str]]] = None,
+):
+    """
+    Generator that yields Server-Sent Events (SSE) for a streaming RAG response.
+    Each event is either:
+      data: {"token": "..."}\n\n   — partial LLM token
+      data: {"done": true, "sources": [...], "history": [...]}\n\n  — final metadata
+      data: [DONE]\n\n           — stream terminator
+    """
+    import json as _json
+
+    global _vectorstore
+    if _vectorstore is None:
+        _vectorstore = get_vectorstore(force_rebuild=False)
+
+    docs = _vectorstore.as_retriever(search_kwargs={"k": k}).invoke(question)
+    context = _format_docs(docs)
+    sources = [d.metadata for d in docs]
+    history = history or []
+    history_text = _history_to_text(history)
+
+    api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
+
+    if not (api_key and ChatOpenAI):
+        fallback = _fallback_answer(question, docs)
+        yield f"data: {_json.dumps({'token': fallback})}\n\n"
+        updated = history + [{"user": question, "assistant": fallback}]
+        yield f"data: {_json.dumps({'done': True, 'sources': sources, 'history': updated})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    prompt_msgs = [
+        ("system", _SYSTEM_PROMPT.strip()),
+        (
+            "human",
+            f"Question: {question}\n\nConversation history:\n{history_text}\n\nRetrieved context:\n{context}",
+        ),
+    ]
+
+    llm = ChatOpenAI(
+        model=settings.groq_model,
+        api_key=api_key,
+        base_url="https://api.groq.com/openai/v1",
+        temperature=0,
+        streaming=True,
+    )
+
+    full_answer = ""
+    try:
+        for chunk in llm.stream(prompt_msgs):
+            token = chunk.content
+            if token:
+                full_answer += token
+                yield f"data: {_json.dumps({'token': token})}\n\n"
+    except Exception as exc:
+        yield f"data: {_json.dumps({'token': f'[Error: {exc}]'})}\n\n"
+
+    updated = history + [{"user": question, "assistant": full_answer}]
+    yield f"data: {_json.dumps({'done': True, 'sources': sources, 'history': updated})}\n\n"
+    yield "data: [DONE]\n\n"
