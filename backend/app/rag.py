@@ -88,7 +88,7 @@ STRICT RULES — follow every one of them without exception:
 3. If the question is unrelated to this project (e.g. weather, sports, cooking, current events, general knowledge), reply with exactly: "I can only answer questions about this Black-Litterman portfolio project."
 4. If the answer is not in the retrieved context, say: "This information is not in my knowledge base."
 5. Never speculate, hallucinate, or provide information not supported by the retrieved context.
-6. Be concise and analytical. End every answer with a short "Sources:" section listing the retrieved chunks you used.
+6. Be concise and analytical. Do NOT include a "Sources:" section in your answer — sources are displayed separately in the UI.
 """
 
 NOTEBOOK_OVERVIEW = textwrap.dedent("""
