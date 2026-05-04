@@ -17,6 +17,7 @@ from .model import run_black_litterman, DEFAULT_TICKERS
 from .rag import ask_rag, ask_rag_stream, generate_narrative, get_vectorstore
 from .backtest import create_job, get_job, run_backtest_async, run_sensitivity
 from .fama_french import compute_ff_factors
+from .static_results import NOTEBOOK_RESULTS
 
 app = FastAPI(title="Black-Litterman RAG API", version="3.0.0")
 settings = load_settings()
@@ -105,6 +106,12 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "env": settings.env}
+
+
+@app.get("/notebook-results")
+def notebook_results():
+    """Return pre-computed results from the original notebook — instant, no computation."""
+    return NOTEBOOK_RESULTS
 
 
 @app.get("/default-tickers")

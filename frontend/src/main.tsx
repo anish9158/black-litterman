@@ -74,6 +74,25 @@ type SentimentResponse = {
 
 type ChatMessage = { role: "user" | "assistant"; text: string };
 
+// --- Notebook pre-computed results ---
+type NotebookModel = {
+  name: string;
+  annual_return: number;
+  annual_volatility: number | null;
+  sharpe_ratio: number | null;
+  max_drawdown: number | null;
+  excess_return_vs_benchmark: number;
+};
+type NotebookWeight = { ticker: string; weight: number };
+type NotebookSensitivitySeries = { ticker: string; weights: number[] };
+type NotebookResults = {
+  benchmark: { name: string; annual_return: number; description: string };
+  models: NotebookModel[];
+  weights: NotebookWeight[];
+  sensitivity: { multipliers: number[]; series: NotebookSensitivitySeries[] };
+  notes: string;
+};
+
 type BacktestMetrics = {
   annual_return: number;
   annual_volatility: number;
@@ -174,6 +193,25 @@ const SIGNAL_COLOR: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 function App() {
+  // --- Notebook pre-computed results ---
+  const [nbResults, setNbResults] = useState<NotebookResults | null>(null);
+  const [nbLoading, setNbLoading] = useState(false);
+
+  async function loadNotebookResults() {
+    setNbLoading(true);
+    try {
+      const data = await getJson<NotebookResults>("/notebook-results");
+      setNbResults(data);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to load notebook results");
+    } finally {
+      setNbLoading(false);
+    }
+  }
+
+  // Auto-load on mount
+  useEffect(() => { loadNotebookResults(); }, []);
+
   // --- Optimizer ---
   const [tickers, setTickers] = useState(
     "RELIANCE.NS,TCS.NS,INFY.NS,HDFCBANK.NS,ICICIBANK.NS,SBIN.NS,LT.NS,AXISBANK.NS",
@@ -568,6 +606,117 @@ function App() {
           </p>
         </div>
         <div className="status">{`Backend: ${API_URL}`}</div>
+      </section>
+
+      {/* ── Notebook Results (pre-computed, always instant) ── */}
+      <section className="card nbResults" style={{ marginBottom: 18 }}>
+        <div className="cardTitle">
+          <TrendingUp size={20} /> Backtest Results — Black-Litterman vs NIFTY 50
+          <span className="streamBadge" style={{ marginLeft: 10 }}>Pre-computed</span>
+        </div>
+        <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+          5-year rolling-window backtest (2019–2024) · XGBoost views · All 50 NIFTY stocks ·
+          Benchmark: <strong>NIFTY 50 (^NSEI)</strong> — market-cap-weighted index of 50 largest NSE-listed companies
+        </p>
+
+        {nbLoading && <p className="muted">Loading…</p>}
+
+        {nbResults && (
+          <>
+            {/* ── Performance Metrics Table ── */}
+            <div style={{ overflowX: "auto", marginBottom: 24 }}>
+              <table className="nbTable">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    {nbResults.models.map((m) => (
+                      <th key={m.name} className={m.name.startsWith("All 50") ? "highlight" : ""}>
+                        {m.name}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: "Annual Return", key: "annual_return", fmt: (v: number) => `${(v * 100).toFixed(1)}%` },
+                    { label: "Annual Volatility", key: "annual_volatility", fmt: (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : "—" },
+                    { label: "Sharpe Ratio", key: "sharpe_ratio", fmt: (v: number | null) => v != null ? v.toFixed(2) : "—" },
+                    { label: "Max Drawdown", key: "max_drawdown", fmt: (v: number | null) => v != null ? `${(v * 100).toFixed(1)}%` : "—" },
+                    { label: "Excess vs Benchmark", key: "excess_return_vs_benchmark", fmt: (v: number) => `+${(v * 100).toFixed(1)}%` },
+                  ].map((row) => (
+                    <tr key={row.label}>
+                      <td>{row.label}</td>
+                      {nbResults.models.map((m) => (
+                        <td key={m.name} className={m.name.startsWith("All 50") ? "highlight" : ""}>
+                          {row.fmt((m as unknown as Record<string, number | null>)[row.key] as number)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* ── Side-by-side: Weights + Sensitivity ── */}
+            <div className="nbCharts">
+              {/* Portfolio Weights Bar */}
+              <div>
+                <h3 className="chartTitle">Final Allocation (s = 1.5)</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <BarChart
+                    data={nbResults.weights.map((w) => ({
+                      ticker: w.ticker.replace(".NS", ""),
+                      weight: parseFloat((w.weight * 100).toFixed(1)),
+                    }))}
+                    layout="vertical"
+                    margin={{ left: 80, right: 20, top: 4, bottom: 4 }}
+                  >
+                    <XAxis type="number" unit="%" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="ticker" tick={{ fontSize: 11 }} width={80} />
+                    <Tooltip formatter={(v) => `${v}%`} />
+                    <Bar dataKey="weight" fill="#4f7cff" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Sensitivity Line Chart */}
+              <div>
+                <h3 className="chartTitle">Sensitivity — Weight vs View Multiplier</h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <LineChart
+                    data={nbResults.sensitivity.multipliers.map((s, i) => {
+                      const pt: Record<string, number> = { s };
+                      nbResults.sensitivity.series.forEach((ser) => {
+                        pt[ser.ticker.replace(".NS", "")] = parseFloat(
+                          (ser.weights[i] * 100).toFixed(1),
+                        );
+                      });
+                      return pt;
+                    })}
+                    margin={{ left: 10, right: 20, top: 4, bottom: 4 }}
+                  >
+                    <XAxis dataKey="s" label={{ value: "Multiplier s", position: "insideBottom", offset: -4 }} tick={{ fontSize: 11 }} />
+                    <YAxis unit="%" tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v) => `${v}%`} />
+                    <Legend />
+                    {nbResults.sensitivity.series.map((ser, i) => (
+                      <Line
+                        key={ser.ticker}
+                        type="monotone"
+                        dataKey={ser.ticker.replace(".NS", "")}
+                        stroke={LINE_COLORS[i % LINE_COLORS.length]}
+                        dot={false}
+                        strokeWidth={2}
+                      />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <p className="muted" style={{ fontSize: 12, marginTop: 12 }}>{nbResults.notes}</p>
+          </>
+        )}
       </section>
 
       {/* ── Natural Language Optimizer ── */}
