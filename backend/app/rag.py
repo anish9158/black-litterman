@@ -269,6 +269,50 @@ def _fallback_answer(question: str, docs: List[Document]) -> str:
     return header + "\n\n".join(bullets)
 
 
+def _build_rich_sources(docs_with_scores: List[tuple]) -> List[Dict[str, Any]]:
+    """Convert (Document, score) pairs into rich source dicts for the frontend."""
+    out = []
+    for doc, score in docs_with_scores:
+        preview = doc.page_content[:220].strip().replace("\n", " ")
+        out.append({
+            "source": doc.metadata.get("source", "unknown"),
+            "category": doc.metadata.get("category", "notebook"),
+            "preview": preview,
+            "char_count": len(doc.page_content),
+            "score": round(float(score), 4),
+        })
+    return out
+
+
+def _generate_follow_ups(answer: str, question: str, api_key: str) -> List[str]:
+    """Ask the LLM to generate 3 follow-up questions based on the answer."""
+    if not (api_key and ChatOpenAI):
+        return []
+    try:
+        llm = ChatOpenAI(
+            model=settings.groq_model,
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            temperature=0.4,
+        )
+        prompt = (
+            "Based on this Q&A about a Black-Litterman portfolio optimiser, "
+            "generate exactly 3 short follow-up questions a user might ask next. "
+            "Return ONLY a JSON array of 3 strings, no other text.\n\n"
+            f"Q: {question}\nA: {answer[:500]}"
+        )
+        raw = llm.invoke([("human", prompt)]).content.strip()
+        # Extract JSON array robustly
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            import json as _j
+            return _j.loads(raw[start:end])[:3]
+    except Exception:
+        pass
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Public ask_rag function
 # ---------------------------------------------------------------------------
@@ -279,33 +323,43 @@ def ask_rag(
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
-    Retrieve context, optionally pass conversation history to the LLM,
-    and return {answer, sources, history}.
+    Retrieve context, call the LLM, and return a rich response including:
+    answer, sources (with scores), token_usage, latency_ms, follow_up_questions.
     """
+    import time
     history = history or []
 
     # Fast off-topic guard — no LLM call needed
     if _is_off_topic(question):
         updated = history + [{"user": question, "assistant": _OFF_TOPIC_REPLY}]
-        return {"answer": _OFF_TOPIC_REPLY, "sources": [], "history": updated}
+        return {
+            "answer": _OFF_TOPIC_REPLY,
+            "sources": [],
+            "history": updated,
+            "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "latency_ms": 0,
+            "follow_up_questions": [],
+        }
 
     global _vectorstore
     if _vectorstore is None:
         _vectorstore = get_vectorstore(force_rebuild=False)
 
-    docs = _vectorstore.as_retriever(search_kwargs={"k": k}).invoke(question)
+    # Use similarity_search_with_score to get relevance scores
+    docs_with_scores = _vectorstore.similarity_search_with_score(question, k=k)
+    docs = [d for d, _ in docs_with_scores]
+    rich_sources = _build_rich_sources(docs_with_scores)
     context = _format_docs(docs)
-    sources = [d.metadata for d in docs]
     history_text = _history_to_text(history)
 
     api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
+    token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    t0 = time.time()
     if api_key and ChatOpenAI and ChatPromptTemplate:
         prompt = ChatPromptTemplate.from_messages([
             ("system", _SYSTEM_PROMPT.strip()),
-            (
-                "human",
-                "Question: {question}\n\nConversation history:\n{history}\n\nRetrieved context:\n{context}",
-            ),
+            ("human", "Question: {question}\n\nConversation history:\n{history}\n\nRetrieved context:\n{context}"),
         ])
         llm = ChatOpenAI(
             model=settings.groq_model,
@@ -313,18 +367,57 @@ def ask_rag(
             base_url="https://api.groq.com/openai/v1",
             temperature=0,
         )
-        answer = llm.invoke(
-            prompt.format_messages(
-                question=question,
-                context=context,
-                history=history_text,
-            )
-        ).content
+        msg = llm.invoke(
+            prompt.format_messages(question=question, context=context, history=history_text)
+        )
+        answer = msg.content
+        # Extract token usage from response metadata (Groq returns this)
+        usage = getattr(msg, "response_metadata", {}).get("token_usage", {})
+        if usage:
+            token_usage = {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
     else:
         answer = _fallback_answer(question, docs)
+    latency_ms = round((time.time() - t0) * 1000)
 
+    follow_ups = _generate_follow_ups(answer, question, api_key or "") if api_key else []
     updated_history = history + [{"user": question, "assistant": answer}]
-    return {"answer": answer, "sources": sources, "history": updated_history}
+    return {
+        "answer": answer,
+        "sources": rich_sources,
+        "history": updated_history,
+        "token_usage": token_usage,
+        "latency_ms": latency_ms,
+        "follow_up_questions": follow_ups,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base listing
+# ---------------------------------------------------------------------------
+
+def get_knowledge_base_chunks() -> List[Dict[str, Any]]:
+    """
+    Return metadata for all chunks currently indexed in the vector store.
+    Used by the /knowledge-base endpoint.
+    """
+    docs = load_documents()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = splitter.split_documents(docs)
+    result = []
+    for i, chunk in enumerate(chunks):
+        preview = chunk.page_content[:200].strip().replace("\n", " ")
+        result.append({
+            "id": i,
+            "source": chunk.metadata.get("source", "unknown"),
+            "category": chunk.metadata.get("category", "notebook"),
+            "preview": preview,
+            "char_count": len(chunk.page_content),
+        })
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -413,13 +506,15 @@ def ask_rag_stream(
         yield "data: [DONE]\n\n"
         return
 
+    import time as _time
     global _vectorstore
     if _vectorstore is None:
         _vectorstore = get_vectorstore(force_rebuild=False)
 
-    docs = _vectorstore.as_retriever(search_kwargs={"k": k}).invoke(question)
+    docs_with_scores = _vectorstore.similarity_search_with_score(question, k=k)
+    docs = [d for d, _ in docs_with_scores]
+    rich_sources = _build_rich_sources(docs_with_scores)
     context = _format_docs(docs)
-    sources = [d.metadata for d in docs]
     history_text = _history_to_text(history)
 
     api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
@@ -428,7 +523,7 @@ def ask_rag_stream(
         fallback = _fallback_answer(question, docs)
         yield f"data: {_json.dumps({'token': fallback})}\n\n"
         updated = history + [{"user": question, "assistant": fallback}]
-        yield f"data: {_json.dumps({'done': True, 'sources': sources, 'history': updated})}\n\n"
+        yield f"data: {_json.dumps({'done': True, 'sources': rich_sources, 'history': updated, 'latency_ms': 0, 'follow_up_questions': []})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
@@ -449,6 +544,7 @@ def ask_rag_stream(
     )
 
     full_answer = ""
+    t0 = _time.time()
     try:
         for chunk in llm.stream(prompt_msgs):
             token = chunk.content
@@ -458,6 +554,16 @@ def ask_rag_stream(
     except Exception as exc:
         yield f"data: {_json.dumps({'token': f'[Error: {exc}]'})}\n\n"
 
+    latency_ms = round((_time.time() - t0) * 1000)
+    # Estimate token counts from character count (≈4 chars per token)
+    prompt_est = len(context) // 4
+    completion_est = len(full_answer) // 4
+    token_usage = {
+        "prompt_tokens": prompt_est,
+        "completion_tokens": completion_est,
+        "total_tokens": prompt_est + completion_est,
+    }
+    follow_ups = _generate_follow_ups(full_answer, question, api_key)
     updated = history + [{"user": question, "assistant": full_answer}]
-    yield f"data: {_json.dumps({'done': True, 'sources': sources, 'history': updated})}\n\n"
+    yield f"data: {_json.dumps({'done': True, 'sources': rich_sources, 'history': updated, 'token_usage': token_usage, 'latency_ms': latency_ms, 'follow_up_questions': follow_ups})}\n\n"
     yield "data: [DONE]\n\n"

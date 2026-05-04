@@ -14,7 +14,7 @@ from .middleware import (
     get_rate_limit_dependency,
 )
 from .model import run_black_litterman, DEFAULT_TICKERS
-from .rag import ask_rag, ask_rag_stream, generate_narrative, get_vectorstore
+from .rag import ask_rag, ask_rag_stream, generate_narrative, get_vectorstore, get_knowledge_base_chunks
 from .backtest import create_job, get_job, run_backtest_async, run_sensitivity
 from .fama_french import compute_ff_factors
 from .static_results import NOTEBOOK_RESULTS
@@ -112,6 +112,15 @@ def health():
 def notebook_results():
     """Return pre-computed results from the original notebook — instant, no computation."""
     return NOTEBOOK_RESULTS
+
+
+@app.get("/knowledge-base")
+def knowledge_base():
+    """Return metadata for all indexed RAG chunks (source, category, preview, char_count)."""
+    try:
+        return {"chunks": get_knowledge_base_chunks()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/default-tickers")
