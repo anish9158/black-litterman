@@ -32,22 +32,30 @@ RAG_INDEX_DIR = BASE_DIR / "rag_index"
 # Allowed topic keywords — used for lightweight off-topic detection
 # ---------------------------------------------------------------------------
 _ALLOWED_TOPICS = {
-    "portfolio", "stock", "ticker", "nifty", "nse", "bse", "india", "indian",
-    "black-litterman", "black litterman", "blacklitterman",
-    "sharpe", "return", "volatility", "drawdown", "benchmark",
-    "xgboost", "model", "backtest", "rolling", "window", "train", "predict",
-    "view", "prior", "posterior", "covariance", "shrinkage", "optimis", "optimiz",
-    "weight", "allocation", "factor", "fama", "french", "smb", "hml", "rmw", "cma",
-    "rag", "chatbot", "retrieval", "embedding", "faiss", "langchain", "groq",
-    "sentiment", "news", "headline", "shap", "feature", "importance",
-    "reliance", "tcs", "infosys", "hdfc", "icici", "sbin", "bajaj", "axis",
-    "infy", "wipro", "techm", "sunpharma", "maruti", "divislab", "cipla",
-    "sensitivity", "multiplier", "risk", "aversion", "tau", "cvxpy",
-    "annual", "cumulative", "momentum", "rsi", "sma", "pe", "price", "book",
-    "how", "why", "what", "explain", "describe", "interpret", "compare",
-    "metric", "result", "performance", "outperform", "exceed", "beat",
-    "report", "pdf", "analysis", "quantitative", "financial", "finance",
-    "equity", "asset", "market", "capital", "invest",
+    # Model & methodology
+    "black-litterman", "black litterman", "blacklitterman", "bl model",
+    "posterior", "prior", "covariance", "shrinkage", "tau", "cvxpy",
+    "xgboost", "gradient boost", "backtest", "rolling window", "walk-forward",
+    "fama", "french", "smb", "hml", "rmw", "cma", "fama-french",
+    "shap", "feature importance", "explainability",
+    # Portfolio / finance terms
+    "portfolio", "allocation", "weight", "rebalance",
+    "sharpe", "drawdown", "volatility", "annual return", "cumulative return",
+    "benchmark", "outperform", "alpha", "beta", "risk-adjusted",
+    "optimis", "optimiz", "convex",
+    "sensitivity", "multiplier", "view", "equilibrium",
+    "momentum", "rsi", "sma", "sma20", "sma50", "moving average",
+    "pe ratio", "price-to-book", "fundamental",
+    # Indices & stocks
+    "nifty", "nse", "bse", "sensex", "nifty50",
+    "reliance", "tcs", "infosys", "infy", "hdfc", "hdfcbank",
+    "icicibank", "icici", "sbin", "bajaj", "axisbank", "axis bank",
+    "wipro", "techm", "tech mahindra", "sunpharma", "maruti", "divislab",
+    "cipla", "kotakbank", "kotak", "bhartiartl", "hindunilvr",
+    # App features
+    "rag", "retrieval", "chatbot", "embedding", "faiss", "vectorstore",
+    "groq", "langchain", "sentiment", "report", "pdf",
+    "backtest result", "performance metric",
 }
 
 _OFF_TOPIC_REPLY = (
