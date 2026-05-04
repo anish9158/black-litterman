@@ -28,13 +28,35 @@ DEFAULT_TICKERS = [
 
 
 def batch_download(tickers: List[str], period: str = "1y") -> pd.DataFrame:
-    data = yf.download(tickers, period=period, progress=False, auto_adjust=False)
-    if isinstance(data.columns, pd.MultiIndex):
-        close = data["Close"]
-    else:
-        close = data[["Close"]].rename(columns={"Close": tickers[0]})
-    close = close.dropna(axis=1, how="all").ffill().dropna()
-    return close
+    """Download closing prices with retries to handle Yahoo Finance rate limits."""
+    import time as _time
+    last_exc: Exception = RuntimeError("Download failed")
+    for attempt in range(4):
+        if attempt:
+            _time.sleep(3 * attempt)
+        try:
+            data = yf.download(
+                tickers, period=period, progress=False,
+                auto_adjust=True,   # auto_adjust avoids the extra Adj Close columns
+            )
+        except Exception as exc:
+            last_exc = exc
+            continue
+
+        if data.empty:
+            last_exc = RuntimeError(
+                "yfinance returned no data — Yahoo Finance may be rate-limiting this server. "
+                "Please try again in a few seconds."
+            )
+            continue
+
+        close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data[["Close"]].rename(columns={"Close": tickers[0]})
+        close = close.dropna(axis=1, how="all").ffill().dropna()
+        if not close.empty:
+            return close
+        last_exc = RuntimeError("All tickers returned empty price data after cleaning.")
+
+    raise last_exc
 
 
 def compute_returns(prices: pd.DataFrame) -> pd.DataFrame:

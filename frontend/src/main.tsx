@@ -15,7 +15,7 @@ import { Bot, PieChart, RefreshCw, Send, TrendingUp, BarChart2, Activity } from 
 import "./style.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 60000;
 const MAX_RETRIES = 1;
 const BACKTEST_POLL_INTERVAL_MS = 3000;
 
