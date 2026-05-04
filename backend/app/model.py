@@ -28,35 +28,68 @@ DEFAULT_TICKERS = [
 
 
 def batch_download(tickers: List[str], period: str = "1y") -> pd.DataFrame:
-    """Download closing prices with retries to handle Yahoo Finance rate limits."""
+    """
+    Download closing prices one ticker at a time with a short delay.
+    This avoids Yahoo Finance bulk-download rate limits.
+    Results are disk-cached (yf_cache/) for 4 hours to minimise repeat calls.
+    """
     import time as _time
-    last_exc: Exception = RuntimeError("Download failed")
-    for attempt in range(4):
-        if attempt:
-            _time.sleep(3 * attempt)
-        try:
-            data = yf.download(
-                tickers, period=period, progress=False,
-                auto_adjust=True,   # auto_adjust avoids the extra Adj Close columns
-            )
-        except Exception as exc:
-            last_exc = exc
-            continue
+    import pickle
+    import hashlib
+    from pathlib import Path as _Path
 
-        if data.empty:
-            last_exc = RuntimeError(
-                "yfinance returned no data — Yahoo Finance may be rate-limiting this server. "
-                "Please try again in a few seconds."
-            )
-            continue
+    cache_dir = _Path(__file__).resolve().parents[1] / "yf_cache" / "prices"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-        close = data["Close"] if isinstance(data.columns, pd.MultiIndex) else data[["Close"]].rename(columns={"Close": tickers[0]})
-        close = close.dropna(axis=1, how="all").ffill().dropna()
-        if not close.empty:
-            return close
-        last_exc = RuntimeError("All tickers returned empty price data after cleaning.")
+    parts: List[pd.Series] = []
+    for ticker in tickers:
+        cache_key = hashlib.md5(f"{ticker}_{period}".encode()).hexdigest()
+        cache_file = cache_dir / f"{cache_key}.pkl"
 
-    raise last_exc
+        # Use cache if it's less than 4 hours old
+        if cache_file.exists():
+            age_hours = (_time.time() - cache_file.stat().st_mtime) / 3600
+            if age_hours < 4:
+                try:
+                    series = pickle.loads(cache_file.read_bytes())
+                    parts.append(series)
+                    continue
+                except Exception:
+                    pass
+
+        # Download with retries
+        series = None
+        for attempt in range(3):
+            if attempt:
+                _time.sleep(4 * attempt)
+            try:
+                hist = yf.Ticker(ticker).history(period=period, auto_adjust=True)
+                if not hist.empty and "Close" in hist.columns:
+                    series = hist["Close"].rename(ticker)
+                    series.index = pd.to_datetime(series.index).tz_localize(None)
+                    try:
+                        cache_file.write_bytes(pickle.dumps(series))
+                    except Exception:
+                        pass
+                    break
+            except Exception:
+                pass
+
+        if series is not None and not series.empty:
+            parts.append(series)
+        _time.sleep(0.3)  # small polite pause between tickers
+
+    if not parts:
+        raise RuntimeError(
+            "No price data could be downloaded. Yahoo Finance may be temporarily "
+            "rate-limiting this server. Please wait 30 seconds and try again."
+        )
+
+    df = pd.concat(parts, axis=1)
+    df = df.dropna(axis=1, how="all").ffill().dropna()
+    if df.empty:
+        raise RuntimeError("All tickers returned empty price data after cleaning.")
+    return df
 
 
 def compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
