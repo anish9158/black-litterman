@@ -5,7 +5,7 @@ backend/.venv/
 backend/__pycache__/
 backend/.env
 backend/rag_index/
-backend/rag_docs/
+backend/rag_docs/**/*.pdf
 
 frontend/node_modules/
 frontend/dist/
