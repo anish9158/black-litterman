@@ -46,6 +46,8 @@ _ALLOWED_TOPICS = {
     "sensitivity", "multiplier", "view", "equilibrium",
     "momentum", "rsi", "sma", "sma20", "sma50", "moving average",
     "pe ratio", "price-to-book", "fundamental",
+    "markowitz", "mean-variance", "ledoit", "shrink",
+    "multifactor",
     # Indices & stocks
     "nifty", "nse", "bse", "sensex", "nifty50",
     "reliance", "tcs", "infosys", "infy", "hdfc", "hdfcbank",
@@ -218,20 +220,72 @@ def load_documents() -> List[Document]:
     return docs
 
 
+RAG_EXTENSIONS = frozenset({
+    ".md", ".txt", ".py", ".ipynb", ".pdf", ".json", ".csv", ".xlsx", ".xls", ".htm", ".html",
+})
+
+
+def _rag_docs_supersede_index(index_path: Path) -> bool:
+    """
+    True if any known rag_docs file was modified after the saved FAISS index —
+    embeddings should be regenerated so retrieval includes new/edited docs.
+    """
+    if not index_path.exists():
+        return True
+    try:
+        idx_mtime = index_path.stat().st_mtime
+    except OSError:
+        return True
+    if not RAG_DOCS_DIR.exists():
+        return False
+    for path in sorted(RAG_DOCS_DIR.rglob("*")):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        suffix = path.suffix.lower()
+        if suffix == "":
+            continue
+        if suffix not in RAG_EXTENSIONS:
+            continue
+        try:
+            if path.stat().st_mtime > idx_mtime:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def get_vectorstore(force_rebuild: bool = False):
+    global _vectorstore
+
+    def _needs_rebuild() -> bool:
+        index_file_local = RAG_INDEX_DIR / "index.faiss"
+        # Note: intentional edits to rag_docs/ are detected via mtime; to force rebuild when
+        # nothing changed on disk delete backend/rag_index/ or restart with code change.
+        return force_rebuild or _rag_docs_supersede_index(index_file_local)
+
     RAG_INDEX_DIR.mkdir(parents=True, exist_ok=True)
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     index_file = RAG_INDEX_DIR / "index.faiss"
-    if index_file.exists() and not force_rebuild:
-        return FAISS.load_local(
+    stale = _needs_rebuild()
+
+    if _vectorstore is not None and not stale:
+        return _vectorstore
+
+    _vectorstore = None  # invalidate cache whenever we rebuild disk index
+
+    if index_file.exists() and not stale:
+        _vectorstore = FAISS.load_local(
             str(RAG_INDEX_DIR), embeddings, allow_dangerous_deserialization=True
         )
+        return _vectorstore
+
     docs = load_documents()
     chunks = RecursiveCharacterTextSplitter(
         chunk_size=900, chunk_overlap=150
     ).split_documents(docs)
     store = FAISS.from_documents(chunks, embeddings)
     store.save_local(str(RAG_INDEX_DIR))
+    _vectorstore = store
     return store
 
 
