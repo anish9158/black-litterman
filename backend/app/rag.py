@@ -28,13 +28,59 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 RAG_DOCS_DIR = BASE_DIR / "rag_docs"
 RAG_INDEX_DIR = BASE_DIR / "rag_index"
 
-# Grounded portfolio-analysis system prompt from notebook cell 14
+# ---------------------------------------------------------------------------
+# Allowed topic keywords — used for lightweight off-topic detection
+# ---------------------------------------------------------------------------
+_ALLOWED_TOPICS = {
+    "portfolio", "stock", "ticker", "nifty", "nse", "bse", "india", "indian",
+    "black-litterman", "black litterman", "blacklitterman",
+    "sharpe", "return", "volatility", "drawdown", "benchmark",
+    "xgboost", "model", "backtest", "rolling", "window", "train", "predict",
+    "view", "prior", "posterior", "covariance", "shrinkage", "optimis", "optimiz",
+    "weight", "allocation", "factor", "fama", "french", "smb", "hml", "rmw", "cma",
+    "rag", "chatbot", "retrieval", "embedding", "faiss", "langchain", "groq",
+    "sentiment", "news", "headline", "shap", "feature", "importance",
+    "reliance", "tcs", "infosys", "hdfc", "icici", "sbin", "bajaj", "axis",
+    "infy", "wipro", "techm", "sunpharma", "maruti", "divislab", "cipla",
+    "sensitivity", "multiplier", "risk", "aversion", "tau", "cvxpy",
+    "annual", "cumulative", "momentum", "rsi", "sma", "pe", "price", "book",
+    "how", "why", "what", "explain", "describe", "interpret", "compare",
+    "metric", "result", "performance", "outperform", "exceed", "beat",
+    "report", "pdf", "analysis", "quantitative", "financial", "finance",
+    "equity", "asset", "market", "capital", "invest",
+}
+
+_OFF_TOPIC_REPLY = (
+    "I can only answer questions about this Black-Litterman portfolio project — "
+    "topics such as the model methodology, backtest results, portfolio allocation, "
+    "XGBoost views, SHAP feature importances, Fama-French factors, sensitivity analysis, "
+    "and the RAG chatbot itself.\n\n"
+    "Your question appears to be outside that scope. Please ask something related to "
+    "the portfolio optimiser."
+)
+
+
+def _is_off_topic(question: str) -> bool:
+    """
+    Lightweight topic guard — returns True if the question has no overlap
+    with allowed portfolio/finance keywords.
+    Does NOT call the LLM; purely string-based to keep it fast and offline.
+    """
+    q_lower = question.lower()
+    return not any(kw in q_lower for kw in _ALLOWED_TOPICS)
+
+
+# System prompt — strict closed-ecosystem guardrails
 _SYSTEM_PROMPT = """
-You are a grounded portfolio-analysis assistant for this Black-Litterman notebook.
-Answer only from the retrieved context.
-If the answer is not supported by the retrieved context, say that clearly.
-Prefer concise, analytical answers.
-End with a short Sources section listing the retrieved sources you used.
+You are a closed-ecosystem assistant for the Black-Litterman Portfolio Optimiser project.
+
+STRICT RULES — follow every one of them without exception:
+1. Answer ONLY from the retrieved context provided below. Do not use any external knowledge, training data, or information from the internet.
+2. ONLY answer questions about: portfolio optimisation, Black-Litterman model, XGBoost views, backtest results, Fama-French factors, SHAP feature importances, sensitivity analysis, NIFTY50 stocks, and the RAG chatbot itself.
+3. If the question is unrelated to this project (e.g. weather, sports, cooking, current events, general knowledge), reply with exactly: "I can only answer questions about this Black-Litterman portfolio project."
+4. If the answer is not in the retrieved context, say: "This information is not in my knowledge base."
+5. Never speculate, hallucinate, or provide information not supported by the retrieved context.
+6. Be concise and analytical. End every answer with a short "Sources:" section listing the retrieved chunks you used.
 """
 
 NOTEBOOK_OVERVIEW = textwrap.dedent("""
@@ -228,6 +274,13 @@ def ask_rag(
     Retrieve context, optionally pass conversation history to the LLM,
     and return {answer, sources, history}.
     """
+    history = history or []
+
+    # Fast off-topic guard — no LLM call needed
+    if _is_off_topic(question):
+        updated = history + [{"user": question, "assistant": _OFF_TOPIC_REPLY}]
+        return {"answer": _OFF_TOPIC_REPLY, "sources": [], "history": updated}
+
     global _vectorstore
     if _vectorstore is None:
         _vectorstore = get_vectorstore(force_rebuild=False)
@@ -235,7 +288,6 @@ def ask_rag(
     docs = _vectorstore.as_retriever(search_kwargs={"k": k}).invoke(question)
     context = _format_docs(docs)
     sources = [d.metadata for d in docs]
-    history = history or []
     history_text = _history_to_text(history)
 
     api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
@@ -343,6 +395,16 @@ def ask_rag_stream(
     """
     import json as _json
 
+    history = history or []
+
+    # Fast off-topic guard — no LLM call needed
+    if _is_off_topic(question):
+        updated = history + [{"user": question, "assistant": _OFF_TOPIC_REPLY}]
+        yield f"data: {_json.dumps({'token': _OFF_TOPIC_REPLY})}\n\n"
+        yield f"data: {_json.dumps({'done': True, 'sources': [], 'history': updated})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
     global _vectorstore
     if _vectorstore is None:
         _vectorstore = get_vectorstore(force_rebuild=False)
@@ -350,7 +412,6 @@ def ask_rag_stream(
     docs = _vectorstore.as_retriever(search_kwargs={"k": k}).invoke(question)
     context = _format_docs(docs)
     sources = [d.metadata for d in docs]
-    history = history or []
     history_text = _history_to_text(history)
 
     api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
