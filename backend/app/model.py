@@ -64,13 +64,22 @@ def bl_update(
 ) -> tuple:
     """
     Full two-inverse Black-Litterman formula from notebook cell 4.
+    Falls back to the single-inverse formula if matrices are near-singular.
     Returns (posterior_mean, posterior_covariance).
     """
-    inv_tau = np.linalg.inv(tau * cov_matrix)
-    inv_O = np.linalg.inv(Omega)
-    M = np.linalg.inv(inv_tau + P.T @ inv_O @ P)
-    mu = M @ (inv_tau @ Pi + P.T @ inv_O @ Q)
-    return mu, M
+    n = len(Pi)
+    eps = 1e-6 * np.eye(n)
+    try:
+        inv_tau = np.linalg.inv(tau * cov_matrix + eps)
+        inv_O = np.linalg.inv(Omega + eps)
+        M = np.linalg.inv(inv_tau + P.T @ inv_O @ P)
+        mu = M @ (inv_tau @ Pi + P.T @ inv_O @ Q)
+        return mu, M
+    except np.linalg.LinAlgError:
+        # Fallback to numerically stable single-inverse formula
+        middle = np.linalg.inv(P @ (tau * cov_matrix) @ P.T + Omega + eps[:len(Q), :len(Q)])
+        posterior = Pi + (tau * cov_matrix) @ P.T @ middle @ (Q - P @ Pi)
+        return posterior, tau * cov_matrix
 
 
 def optimize_portfolio(

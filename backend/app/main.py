@@ -106,8 +106,7 @@ def optimize_portfolio(req: OptimizeRequest, _: None = Depends(enforce_rate_limi
             req.use_xgb_views,
         )
     except Exception as exc:
-        detail = str(exc) if not settings.is_production else "Optimization failed"
-        raise HTTPException(status_code=400, detail=detail)
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/ask-rag")
