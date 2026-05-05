@@ -4,6 +4,7 @@ Faithfully converted from notebook cells 13 and 14.
 """
 import json
 import os
+import re
 import textwrap
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -71,6 +72,33 @@ _OFF_TOPIC_REPLY = (
     "the portfolio optimiser."
 )
 
+# Diverse anchors so suggestion mining does not depend on a single query embedding.
+_SUGGESTION_ANCHOR_QUERIES = [
+    "Black-Litterman posterior optimisation cvxpy portfolio",
+    "XGBoost views SHAP feature importance",
+    "rolling window backtest Sharpe cumulative returns NIFTY",
+    "Fama French five factor SMB HML",
+    "sensitivity analysis view multiplier weights",
+    "covariance shrinkage tau equilibrium",
+]
+
+# Offline-safe starters aligned with NOTEBOOK_OVERVIEW / app docs (no live metrics implied).
+_FALLBACK_GROUNDED_STARTER_QUESTIONS = [
+    "What steps does the documented Black-Litterman workflow include?",
+    "How does the project describe training XGBoost for portfolio views?",
+    "What does the documentation say about rolling-window backtests and sensitivity analysis?",
+    "What inputs does the workflow derive from market data (e.g. technicals, fundamentals)?",
+]
+
+_STOP_WORDS_SUGGESTIONS = frozenset({
+    "what", "does", "this", "that", "from", "with", "have", "been", "were", "how", "why",
+    "when", "where", "which", "about", "into", "than", "then", "these", "those", "such",
+    "some", "each", "other", "there", "their", "they", "them", "will", "would", "could",
+    "should", "might", "also", "more", "most", "very", "just", "like", "the", "and", "for",
+    "are", "but", "not", "you", "all", "can", "was", "one", "our", "out", "get", "use",
+    "any", "may", "way", "who", "its", "now", "did", "say", "says", "being", "here",
+})
+
 
 def _is_off_topic(question: str) -> bool:
     """
@@ -80,6 +108,130 @@ def _is_off_topic(question: str) -> bool:
     """
     q_lower = question.lower()
     return not any(kw in q_lower for kw in _ALLOWED_TOPICS)
+
+
+def _question_terms_overlap_context(question: str, context: str) -> bool:
+    """True if at least one substantive term from the question appears in context (cheap grounding check)."""
+    ctx = context.lower()
+    words = re.findall(r"[a-z][a-z0-9]{2,}", question.lower())
+    for w in words:
+        if w in _STOP_WORDS_SUGGESTIONS:
+            continue
+        if w in ctx:
+            return True
+    return False
+
+
+def _filter_grounded_question_candidates(
+    candidates: List[str],
+    context: str,
+    max_n: int = 6,
+) -> List[str]:
+    """Keep suggestions that pass the topic guard and overlap retrieved context."""
+    out: List[str] = []
+    for q in candidates:
+        q = (q or "").strip()
+        if len(q) < 10:
+            continue
+        if _is_off_topic(q):
+            continue
+        if not _question_terms_overlap_context(q, context):
+            continue
+        if q not in out:
+            out.append(q)
+        if len(out) >= max_n:
+            break
+    return out
+
+
+def _gather_chunks_for_suggestions(vstore: FAISS, per_anchor: int = 2) -> List[Document]:
+    seen: set[tuple] = set()
+    out: List[Document] = []
+    for anchor in _SUGGESTION_ANCHOR_QUERIES:
+        for doc, _ in vstore.similarity_search_with_score(anchor, k=per_anchor):
+            key = (doc.metadata.get("source"), doc.page_content[:120])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(doc)
+    return out
+
+
+def _format_suggestion_context(docs: List[Document], max_chars: int = 7200) -> str:
+    blocks: List[str] = []
+    n = 0
+    for i, doc in enumerate(docs, start=1):
+        meta = doc.metadata.get("source", "unknown")
+        block = f"[Excerpt {i} | {meta}]\n{doc.page_content.strip()}\n\n"
+        if n + len(block) > max_chars:
+            break
+        blocks.append(block)
+        n += len(block)
+    return "".join(blocks)
+
+
+def get_grounded_rag_suggestions(n: int = 6) -> List[str]:
+    """
+    Starter questions mined from current index: diverse retrieval + LLM (if configured),
+    filtered so each suggestion is plausibly on-topic and grounded in retrieved excerpts.
+    """
+    global _vectorstore
+    if _vectorstore is None:
+        _vectorstore = get_vectorstore(force_rebuild=False)
+
+    docs = _gather_chunks_for_suggestions(_vectorstore)
+    context = _format_suggestion_context(docs)
+    if not context.strip():
+        return _FALLBACK_GROUNDED_STARTER_QUESTIONS[:n]
+
+    api_key = os.getenv("GROQ_TOKEN") or settings.groq_api_key
+    fallback_filtered = _filter_grounded_question_candidates(
+        _FALLBACK_GROUNDED_STARTER_QUESTIONS, context, max_n=n
+    )
+
+    if not (api_key and ChatOpenAI):
+        return fallback_filtered or _FALLBACK_GROUNDED_STARTER_QUESTIONS[:n]
+
+    try:
+        llm = ChatOpenAI(
+            model=settings.groq_model,
+            api_key=api_key,
+            base_url=settings.llm_base_url,
+            temperature=0.25,
+        )
+        prompt = (
+            f"You propose starter questions for a documentation-only RAG chatbot. "
+            f"Output at most {n} questions. Each question MUST be fully answerable using "
+            "ONLY the EXCERPTS below — not general knowledge. "
+            "Do not invent ticker rankings, live performance, or specific numeric backtest results "
+            "unless the EXCERPTS explicitly state them. "
+            "Prefer methodology, workflow, inputs, and outputs the text actually describes. "
+            f"Return ONLY a JSON array of up to {n} strings, no markdown.\n\n"
+            f"EXCERPTS:\n{context}"
+        )
+        raw = llm.invoke([("human", prompt)]).content.strip()
+        log_llm_call(
+            stage="rag_starter_suggestions",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=prompt,
+            input_artifacts=["backend/rag_docs/"],
+            output_artifact="",
+        )
+        start = raw.find("[")
+        end = raw.rfind("]") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, list):
+                filtered = _filter_grounded_question_candidates(
+                    [str(x) for x in parsed], context, max_n=n
+                )
+                if filtered:
+                    return filtered
+    except Exception:
+        pass
+
+    return fallback_filtered or _FALLBACK_GROUNDED_STARTER_QUESTIONS[:n]
 
 
 # System prompt — strict closed-ecosystem guardrails
@@ -350,22 +502,38 @@ def _build_rich_sources(docs_with_scores: List[tuple]) -> List[Dict[str, Any]]:
     return out
 
 
-def _generate_follow_ups(answer: str, question: str, api_key: str) -> List[str]:
-    """Ask the LLM to generate 3 follow-up questions based on the answer."""
+def _generate_follow_ups(
+    answer: str,
+    question: str,
+    api_key: str,
+    retrieved_context: str,
+) -> List[str]:
+    """LLM follow-ups that must be answerable from the same retrieved context; post-filtered for grounding."""
     if not (api_key and ChatOpenAI):
+        return []
+    ctx = (retrieved_context or "")[:6500]
+    if not ctx.strip():
         return []
     try:
         llm = ChatOpenAI(
             model=settings.groq_model,
             api_key=api_key,
             base_url=settings.llm_base_url,
-            temperature=0.4,
+            temperature=0.25,
         )
         prompt = (
-            "Based on this Q&A about a Black-Litterman portfolio optimiser, "
-            "generate exactly 3 short follow-up questions a user might ask next. "
-            "Return ONLY a JSON array of 3 strings, no other text.\n\n"
-            f"Q: {question}\nA: {answer[:500]}"
+            "You propose follow-up questions for a STRICT retrieval-grounded chatbot. "
+            "The next turn will retrieve fresh chunks, but each follow-up you propose MUST be answerable "
+            "using ONLY the RETRIEVED CONTEXT below (same corpus excerpt the current answer used).\n\n"
+            "Rules:\n"
+            "1. Output exactly 3 short follow-up questions.\n"
+            "2. Each must be answerable from the RETRIEVED CONTEXT alone — not general knowledge.\n"
+            "3. Do not ask about specific tickers, metrics, or rankings unless they appear in the RETRIEVED CONTEXT.\n"
+            "4. Re-use terminology from the RETRIEVED CONTEXT when possible.\n"
+            "5. Return ONLY a JSON array of 3 strings.\n\n"
+            f"Original user question: {question}\n\n"
+            f"Assistant answer (for phrasing only; ground questions in CONTEXT): {answer[:650]}\n\n"
+            f"RETRIEVED CONTEXT:\n{ctx}"
         )
         raw = llm.invoke([("human", prompt)]).content.strip()
         log_llm_call(
@@ -376,12 +544,14 @@ def _generate_follow_ups(answer: str, question: str, api_key: str) -> List[str]:
             input_artifacts=["backend/rag_docs/"],
             output_artifact="",
         )
-        # Extract JSON array robustly
         start = raw.find("[")
         end = raw.rfind("]") + 1
         if start >= 0 and end > start:
-            import json as _j
-            return _j.loads(raw[start:end])[:3]
+            parsed = json.loads(raw[start:end])
+            if isinstance(parsed, list):
+                return _filter_grounded_question_candidates(
+                    [str(x) for x in parsed], retrieved_context, max_n=3
+                )
     except Exception:
         pass
     return []
@@ -474,7 +644,9 @@ def ask_rag(
         answer = _fallback_answer(question, docs)
     latency_ms = round((time.time() - t0) * 1000)
 
-    follow_ups = _generate_follow_ups(answer, question, api_key or "") if api_key else []
+    follow_ups = (
+        _generate_follow_ups(answer, question, api_key or "", context) if api_key else []
+    )
     updated_history = history + [{"user": question, "assistant": answer}]
     return {
         "answer": answer,
@@ -680,7 +852,7 @@ def ask_rag_stream(
         "completion_tokens": completion_est,
         "total_tokens": prompt_est + completion_est,
     }
-    follow_ups = _generate_follow_ups(full_answer, question, api_key)
+    follow_ups = _generate_follow_ups(full_answer, question, api_key, context)
     updated = history + [{"user": question, "assistant": full_answer}]
     yield f"data: {_json.dumps({'done': True, 'sources': rich_sources, 'history': updated, 'token_usage': token_usage, 'latency_ms': latency_ms, 'follow_up_questions': follow_ups})}\n\n"
     yield "data: [DONE]\n\n"

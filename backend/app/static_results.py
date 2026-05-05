@@ -98,7 +98,7 @@ NOTEBOOK_RESULTS = {
         ],
     },
     "notes": (
-        "Results are from a 5-year rolling-window backtest (2019–2024) using the "
+        "Results are from a ~5-year rolling-window backtest (July 2020–July 2025) using the "
         "Black-Litterman model with XGBoost-generated views. The 'All 50 With Views' "
         "portfolio achieves a Sharpe ratio of 2.36 vs the NIFTY 50 benchmark, "
         "representing ~20% excess annualised return."

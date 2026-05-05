@@ -31,15 +31,6 @@ const CHART_TRIGGERS: { keywords: string[]; chart: string; caption: string }[] =
   },
 ];
 
-const SUGGESTED_QUESTIONS = [
-  "How does this model beat the NIFTY 50?",
-  "Explain the XGBoost view generation",
-  "What is the Sharpe ratio from the backtest?",
-  "Why does ICICIBANK get the highest allocation?",
-  "Show the backtest chart",
-  "What is the Black-Litterman model?",
-];
-
 type Source = {
   source: string;
   category: string;
@@ -152,6 +143,8 @@ function TokenBadge({ usage, latencyMs }: { usage: TokenUsage; latencyMs: number
 }
 
 export default function Chat({ threadId: _threadId }: { threadId: string }) {
+  const [starterPrompts, setStarterPrompts] = useState<string[]>([]);
+  const [startersLoading, setStartersLoading] = useState(true);
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       const saved = localStorage.getItem("bl_chat_messages");
@@ -168,6 +161,28 @@ export default function Chat({ threadId: _threadId }: { threadId: string }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetchWithTimeout(`${API_URL}/rag-suggested-prompts`, { method: "GET" });
+        if (!res.ok) throw new Error("bad status");
+        const data = (await res.json()) as { questions?: unknown };
+        const list = Array.isArray(data.questions)
+          ? data.questions.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+          : [];
+        if (!cancelled) setStarterPrompts(list);
+      } catch {
+        if (!cancelled) setStarterPrompts([]);
+      } finally {
+        if (!cancelled) setStartersLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (messages.length > 0) {
@@ -297,16 +312,29 @@ export default function Chat({ threadId: _threadId }: { threadId: string }) {
                 Grounded on your notebook, backtest results, and model documentation
               </p>
             </div>
-            <div className="flex flex-wrap justify-center gap-2 max-w-xl">
-              {SUGGESTED_QUESTIONS.map((q) => (
-                <button
-                  key={q}
-                  onClick={() => ask(q)}
-                  className="rounded-full border border-border bg-accent/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
-                >
-                  {q}
-                </button>
-              ))}
+            <div className="flex flex-wrap justify-center gap-2 max-w-xl min-h-[2.5rem]">
+              {startersLoading ? (
+                <>
+                  <Skeleton className="h-8 w-44 rounded-full" />
+                  <Skeleton className="h-8 w-52 rounded-full" />
+                  <Skeleton className="h-8 w-40 rounded-full" />
+                </>
+              ) : starterPrompts.length === 0 ? (
+                <p className="text-xs text-muted-foreground text-center max-w-md">
+                  Suggested prompts could not be loaded. Ensure the API is running at {API_URL}, or type a question
+                  below.
+                </p>
+              ) : (
+                starterPrompts.map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => ask(q)}
+                    className="rounded-full border border-border bg-accent/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors text-left"
+                  >
+                    {q}
+                  </button>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -382,13 +410,13 @@ export default function Chat({ threadId: _threadId }: { threadId: string }) {
       {/* Input area */}
       <div className="border-t border-border bg-card px-6 py-4 shrink-0">
         {/* Suggested questions (shown when chat has messages) */}
-        {messages.length > 0 && (
+        {messages.length > 0 && !startersLoading && starterPrompts.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
-            {SUGGESTED_QUESTIONS.slice(0, 4).map((q) => (
+            {starterPrompts.slice(0, 4).map((q) => (
               <button
                 key={q}
                 onClick={() => ask(q)}
-                className="rounded-full border border-border bg-accent/30 px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors"
+                className="rounded-full border border-border bg-accent/30 px-2.5 py-1 text-[11px] text-muted-foreground hover:text-foreground hover:border-primary/50 transition-colors text-left"
               >
                 {q}
               </button>
