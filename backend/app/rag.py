@@ -6,6 +6,8 @@ import json
 import os
 import re
 import textwrap
+import time
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -209,7 +211,11 @@ def get_grounded_rag_suggestions(n: int = 6) -> List[str]:
             f"Return ONLY a JSON array of up to {n} strings, no markdown.\n\n"
             f"EXCERPTS:\n{context}"
         )
-        raw = llm.invoke([("human", prompt)]).content.strip()
+        t0 = time.perf_counter()
+        sug_msg = llm.invoke([("human", prompt)])
+        raw = sug_msg.content.strip()
+        sug_ms = int(round((time.perf_counter() - t0) * 1000))
+        sug_usage = getattr(sug_msg, "response_metadata", {}).get("token_usage", {}) or {}
         log_llm_call(
             stage="rag_starter_suggestions",
             provider="groq",
@@ -217,6 +223,12 @@ def get_grounded_rag_suggestions(n: int = 6) -> List[str]:
             prompt_material=prompt,
             input_artifacts=["backend/rag_docs/"],
             output_artifact="",
+            route="/rag-suggested-prompts",
+            latency_ms=sug_ms,
+            input_tokens=sug_usage.get("prompt_tokens"),
+            output_tokens=sug_usage.get("completion_tokens"),
+            total_tokens=sug_usage.get("total_tokens"),
+            status="ok",
         )
         start = raw.find("[")
         end = raw.rfind("]") + 1
@@ -507,6 +519,7 @@ def _generate_follow_ups(
     question: str,
     api_key: str,
     retrieved_context: str,
+    audit_route: Optional[str] = None,
 ) -> List[str]:
     """LLM follow-ups that must be answerable from the same retrieved context; post-filtered for grounding."""
     if not (api_key and ChatOpenAI):
@@ -535,7 +548,11 @@ def _generate_follow_ups(
             f"Assistant answer (for phrasing only; ground questions in CONTEXT): {answer[:650]}\n\n"
             f"RETRIEVED CONTEXT:\n{ctx}"
         )
-        raw = llm.invoke([("human", prompt)]).content.strip()
+        t0 = time.perf_counter()
+        fu_msg = llm.invoke([("human", prompt)])
+        raw = fu_msg.content.strip()
+        fu_ms = int(round((time.perf_counter() - t0) * 1000))
+        fu_usage = getattr(fu_msg, "response_metadata", {}).get("token_usage", {}) or {}
         log_llm_call(
             stage="rag_follow_up_suggestions",
             provider="groq",
@@ -543,6 +560,12 @@ def _generate_follow_ups(
             prompt_material=prompt,
             input_artifacts=["backend/rag_docs/"],
             output_artifact="",
+            route=audit_route,
+            latency_ms=fu_ms,
+            input_tokens=fu_usage.get("prompt_tokens"),
+            output_tokens=fu_usage.get("completion_tokens"),
+            total_tokens=fu_usage.get("total_tokens"),
+            status="ok",
         )
         start = raw.find("[")
         end = raw.rfind("]") + 1
@@ -570,7 +593,6 @@ def ask_rag(
     Retrieve context, call the LLM, and return a rich response including:
     answer, sources (with scores), token_usage, latency_ms, follow_up_questions.
     """
-    import time
     history = history or []
 
     # Fast off-topic guard — no LLM call needed
@@ -624,16 +646,8 @@ def ask_rag(
             + "\nRetrieved context:\n"
             + context
         )
-        log_llm_call(
-            stage="rag_chat",
-            provider="groq",
-            model=settings.groq_model,
-            prompt_material=audit_text,
-            input_artifacts=["backend/rag_docs/"],
-            output_artifact="",
-        )
         # Extract token usage from response metadata (Groq returns this)
-        usage = getattr(msg, "response_metadata", {}).get("token_usage", {})
+        usage = getattr(msg, "response_metadata", {}).get("token_usage", {}) or {}
         if usage:
             token_usage = {
                 "prompt_tokens": usage.get("prompt_tokens", 0),
@@ -644,8 +658,26 @@ def ask_rag(
         answer = _fallback_answer(question, docs)
     latency_ms = round((time.time() - t0) * 1000)
 
+    if api_key and ChatOpenAI and ChatPromptTemplate and answer:
+        log_llm_call(
+            stage="rag_chat",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=audit_text,
+            input_artifacts=["backend/rag_docs/"],
+            output_artifact="",
+            route="/ask-rag",
+            latency_ms=int(latency_ms),
+            input_tokens=usage.get("prompt_tokens") if usage else None,
+            output_tokens=usage.get("completion_tokens") if usage else None,
+            total_tokens=usage.get("total_tokens") if usage else None,
+            status="ok",
+        )
+
     follow_ups = (
-        _generate_follow_ups(answer, question, api_key or "", context) if api_key else []
+        _generate_follow_ups(answer, question, api_key or "", context, audit_route="/ask-rag")
+        if api_key
+        else []
     )
     updated_history = history + [{"user": question, "assistant": answer}]
     return {
@@ -691,6 +723,7 @@ def generate_narrative(
     allocation: List[Dict[str, Any]],
     metrics: Dict[str, float],
     tickers: List[str],
+    audit_route: Optional[str] = None,
 ) -> str:
     """
     Use the Groq LLM to produce a concise, human-readable portfolio explanation.
@@ -736,7 +769,11 @@ def generate_narrative(
             base_url=settings.llm_base_url,
             temperature=0.3,
         )
-        content = llm.invoke([("human", prompt)]).content
+        t0 = time.perf_counter()
+        narr_msg = llm.invoke([("human", prompt)])
+        content = narr_msg.content
+        narr_ms = int(round((time.perf_counter() - t0) * 1000))
+        narr_usage = getattr(narr_msg, "response_metadata", {}).get("token_usage", {}) or {}
         log_llm_call(
             stage="portfolio_narrative",
             provider="groq",
@@ -744,9 +781,26 @@ def generate_narrative(
             prompt_material=prompt,
             input_artifacts=[],
             output_artifact="",
+            route=audit_route,
+            latency_ms=narr_ms,
+            input_tokens=narr_usage.get("prompt_tokens"),
+            output_tokens=narr_usage.get("completion_tokens"),
+            total_tokens=narr_usage.get("total_tokens"),
+            status="ok",
         )
         return content
-    except Exception:
+    except Exception as exc:
+        log_llm_call(
+            stage="portfolio_narrative",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=prompt,
+            input_artifacts=[],
+            output_artifact="",
+            route=audit_route,
+            status="error",
+            error_message=str(exc)[:500],
+        )
         return ""
 
 
@@ -817,6 +871,8 @@ def ask_rag_stream(
 
     full_answer = ""
     t0 = _time.time()
+    stream_run_id = str(uuid.uuid4())
+    stream_err: Optional[str] = None
     try:
         for chunk in llm.stream(prompt_msgs):
             token = chunk.content
@@ -824,6 +880,7 @@ def ask_rag_stream(
                 full_answer += token
                 yield f"data: {_json.dumps({'token': token})}\n\n"
     except Exception as exc:
+        stream_err = str(exc)[:500]
         yield f"data: {_json.dumps({'token': f'[Error: {exc}]'})}\n\n"
 
     latency_ms = round((_time.time() - t0) * 1000)
@@ -836,6 +893,14 @@ def ask_rag_stream(
         + "\nRetrieved context:\n"
         + context
     )
+    # Estimate token counts from character count (≈4 chars per token) — same heuristic as API metadata for stream
+    prompt_est = len(stream_audit_text) // 4
+    completion_est = len(full_answer) // 4
+    token_usage = {
+        "prompt_tokens": prompt_est,
+        "completion_tokens": completion_est,
+        "total_tokens": prompt_est + completion_est,
+    }
     log_llm_call(
         stage="rag_chat_stream",
         provider="groq",
@@ -843,16 +908,18 @@ def ask_rag_stream(
         prompt_material=stream_audit_text,
         input_artifacts=["backend/rag_docs/"],
         output_artifact="",
+        route="/ask-rag-stream",
+        run_id=stream_run_id,
+        latency_ms=int(latency_ms),
+        input_tokens=prompt_est,
+        output_tokens=completion_est,
+        total_tokens=prompt_est + completion_est,
+        status="error" if stream_err else "ok",
+        error_message=stream_err,
     )
-    # Estimate token counts from character count (≈4 chars per token)
-    prompt_est = len(context) // 4
-    completion_est = len(full_answer) // 4
-    token_usage = {
-        "prompt_tokens": prompt_est,
-        "completion_tokens": completion_est,
-        "total_tokens": prompt_est + completion_est,
-    }
-    follow_ups = _generate_follow_ups(full_answer, question, api_key, context)
+    follow_ups = _generate_follow_ups(
+        full_answer, question, api_key, context, audit_route="/ask-rag-stream"
+    )
     updated = history + [{"user": question, "assistant": full_answer}]
     yield f"data: {_json.dumps({'done': True, 'sources': rich_sources, 'history': updated, 'token_usage': token_usage, 'latency_ms': latency_ms, 'follow_up_questions': follow_ups})}\n\n"
     yield "data: [DONE]\n\n"

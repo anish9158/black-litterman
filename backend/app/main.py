@@ -28,6 +28,78 @@ from .backtest import create_job, get_job, run_backtest_async, run_sensitivity
 from .fama_french import compute_ff_factors
 from .static_results import NOTEBOOK_RESULTS
 
+# Reference pipeline for dashboards/docs — static description aligned with implemented modules.
+AI_PIPELINE_TRACE: Dict[str, Any] = {
+    "name": "AI-Powered Black-Litterman Portfolio Intelligence Pipeline",
+    "stages": [
+        {
+            "stage": "USER_REQUEST",
+            "description": (
+                "User query via REST (optimisation, backtest, sensitivity, NL-optimise) or chat UI; "
+                "rate-limited and size-limited FastAPI surface."
+            ),
+        },
+        {
+            "stage": "RAG_AND_NL_INTENT",
+            "description": (
+                "Documentation RAG (/ask-rag, /ask-rag-stream): FAISS retrieval, topic guard, Groq generation. "
+                "Natural-language portfolio intent parsed in /nl-optimize before deterministic optimisation."
+            ),
+        },
+        {
+            "stage": "MARKET_DATA_AND_FEATURES",
+            "description": (
+                "yfinance market pulls and feature engineering (technical and fundamental inputs) feeding XGBoost "
+                "views and Black-Litterman inputs in model.py / backtest flows."
+            ),
+        },
+        {
+            "stage": "XGBOOST_VIEWS",
+            "description": (
+                "Per-ticker XGBoost regressors produce return views (Q) combined with equilibrium priors; "
+                "optional when optimising via use_xgb_views / use_views flags."
+            ),
+        },
+        {
+            "stage": "BLACK_LITTERMAN_OPTIMISATION",
+            "description": (
+                "Posterior update and CVXPY constrained solve (mean-variance objective, long-only, etc.) "
+                "in run_black_litterman and related endpoints."
+            ),
+        },
+        {
+            "stage": "SHAP_EXPLAINABILITY",
+            "description": (
+                "TreeExplainer SHAP values for trained XGBoost view models where exposed through optimisation "
+                "and reporting flows."
+            ),
+        },
+        {
+            "stage": "SOURCE_GROUNDED_EXPLANATION",
+            "description": (
+                "Chat returns retrieved chunk metadata and L² distances; strict system prompt limits answers "
+                "to retrieved context. /knowledge-base lists indexed chunk previews."
+            ),
+        },
+        {
+            "stage": "TOKEN_LATENCY_OBSERVABILITY",
+            "description": (
+                "/ask-rag returns provider token_usage and latency_ms when Groq is configured; "
+                "/ask-rag-stream returns estimated tokens (character heuristic) and latency_ms in the done event; "
+                "frontend Chat surfaces tokens and latency."
+            ),
+        },
+        {
+            "stage": "LLM_AUDIT_LOGGING",
+            "description": (
+                "log_llm_call appends NDJSON rows to backend/logs/llm_calls.jsonl with stage, timestamp, "
+                "provider, model, prompt_hash, input_artifacts, output_artifact, and optional route/tokens/latency."
+            ),
+        },
+    ],
+}
+
+
 app = FastAPI(title="Black-Litterman RAG API", version="3.0.0")
 settings = load_settings()
 rate_limiter = InMemoryRateLimiter(requests_per_minute=settings.rate_limit_per_minute)
@@ -184,6 +256,12 @@ def _check_detail(exc: Exception) -> str:
     return str(exc)
 
 
+@app.get("/ai-pipeline-trace")
+def ai_pipeline_trace():
+    """Static pipeline description for dashboards and integrations."""
+    return AI_PIPELINE_TRACE
+
+
 @app.get("/notebook-results")
 def notebook_results():
     """Return cached notebook-derived backtest summaries and charts metadata (no live computation)."""
@@ -229,6 +307,7 @@ def optimize_portfolio(req: OptimizeRequest, _: None = Depends(enforce_rate_limi
                 allocation=result.get("allocation", []),
                 metrics=result.get("metrics", {}),
                 tickers=result.get("tickers", []),
+                audit_route="/optimize-portfolio",
             )
         except Exception:
             result["narrative"] = ""
@@ -430,6 +509,7 @@ def nl_optimize(req: NLOptimizeRequest, _: None = Depends(enforce_rate_limit)):
             allocation=result.get("allocation", []),
             metrics=result.get("metrics", {}),
             tickers=result.get("tickers", []),
+            audit_route="/nl-optimize",
         )
         return result
     except Exception as exc:
