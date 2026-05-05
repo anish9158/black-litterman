@@ -61,6 +61,7 @@ Frontend:
 ## Main API Routes
 
 - `GET /health`
+- `GET /system-check` — dashboard payload, RAG FAISS + sample retrieval, Groq key (same checks as the frontend System Check page)
 - `GET /default-tickers`
 - `POST /optimize-portfolio`
 - `POST /ask-rag`

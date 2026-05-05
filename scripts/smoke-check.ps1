@@ -7,6 +7,18 @@ $ErrorActionPreference = "Stop"
 Write-Host "Checking health endpoint..."
 Invoke-RestMethod -Method Get -Uri "$BackendBaseUrl/health" | Out-Null
 
+Write-Host "Running system-check (dashboard data, RAG index, Groq key)..."
+$sc = Invoke-RestMethod -Method Get -Uri "$BackendBaseUrl/system-check"
+Write-Host ("  overall status: {0}" -f $sc.status)
+if ($sc.status -eq "error") {
+  Write-Host ($sc.checks | ConvertTo-Json -Depth 6)
+  throw "system-check returned error status"
+}
+if ($null -ne $sc.warnings -and $sc.warnings.Count -gt 0) {
+  Write-Host "  warnings:"
+  $sc.warnings | ForEach-Object { Write-Host "   - $_" }
+}
+
 Write-Host "Checking optimize endpoint..."
 $optimizeBody = @{
   tickers = @("RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFCBANK.NS")

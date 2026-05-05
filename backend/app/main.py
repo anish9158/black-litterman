@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -108,9 +110,76 @@ def health():
     return {"status": "ok", "env": settings.env}
 
 
+@app.get("/system-check")
+def system_check():
+    """
+    Deep checks: dashboard static bundle, RAG vector store + sample retrieval,
+    Groq API key presence. Use for smoke tests after deploy.
+
+    Lightweight: no Yahoo Finance calls, no LLM generation.
+    """
+    checks: Dict[str, Any] = {}
+    warnings: List[str] = []
+
+    try:
+        models = NOTEBOOK_RESULTS.get("models") or []
+        nb_ok = isinstance(models, list) and len(models) > 0
+        checks["notebook_results"] = {
+            "ok": nb_ok,
+            "detail": f"{len(models)} model rows" if nb_ok else "missing models",
+        }
+    except Exception as exc:
+        checks["notebook_results"] = {"ok": False, "detail": _check_detail(exc)}
+
+    try:
+        t0 = time.perf_counter()
+        vs = get_vectorstore()
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        nvec = getattr(getattr(vs, "index", None), "ntotal", None) or 0
+        retrieved = vs.similarity_search("Black-Litterman portfolio", k=1)
+        retrieve_ok = len(retrieved) > 0
+        checks["rag_vectorstore"] = {
+            "ok": nvec > 0 and retrieve_ok,
+            "faiss_vectors": int(nvec),
+            "load_similarity_latency_ms": elapsed_ms,
+            "sample_retrieval_ok": retrieve_ok,
+        }
+    except Exception as exc:
+        checks["rag_vectorstore"] = {
+            "ok": False,
+            "detail": _check_detail(exc),
+        }
+
+    has_groq = bool((os.getenv("GROQ_TOKEN") or "").strip() or settings.groq_api_key.strip())
+    checks["groq_llm"] = {"ok": has_groq, "configured": has_groq}
+    if not has_groq:
+        warnings.append(
+            "GROQ_API_KEY / GROQ_TOKEN not configured — chat is retrieval-only (no full LLM answers)."
+        )
+
+    critical_ok = bool(checks.get("notebook_results", {}).get("ok")) and bool(
+        checks.get("rag_vectorstore", {}).get("ok")
+    )
+
+    if not critical_ok:
+        overall = "error"
+    elif not has_groq:
+        overall = "degraded"
+    else:
+        overall = "ok"
+
+    return {"status": overall, "checks": checks, "warnings": warnings}
+
+
+def _check_detail(exc: Exception) -> str:
+    if settings.is_production:
+        return "failed"
+    return str(exc)
+
+
 @app.get("/notebook-results")
 def notebook_results():
-    """Return pre-computed results from the original notebook — instant, no computation."""
+    """Return cached notebook-derived backtest summaries and charts metadata (no live computation)."""
     return NOTEBOOK_RESULTS
 
 

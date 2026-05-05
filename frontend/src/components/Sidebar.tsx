@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { MessageSquare, BarChart2, Database, TrendingUp, Copy, Check } from "lucide-react";
+import { MessageSquare, BarChart2, Database, TrendingUp, Copy, Check, Activity } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { to: "/chat", icon: MessageSquare, label: "Chat" },
   { to: "/dashboard", icon: BarChart2, label: "Dashboard" },
   { to: "/knowledge-base", icon: Database, label: "Knowledge Base" },
+  { to: "/system-check", icon: Activity, label: "System Check" },
 ];
 
 export default function Sidebar({ threadId }: { threadId: string }) {

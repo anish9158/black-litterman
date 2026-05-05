@@ -4,6 +4,7 @@ import Sidebar from "@/components/Sidebar";
 import Chat from "@/pages/Chat";
 import Dashboard from "@/pages/Dashboard";
 import KnowledgeBase from "@/pages/KnowledgeBase";
+import SystemStatus from "@/pages/SystemStatus";
 
 function generateThreadId(): string {
   return `thread_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="/chat" element={<Chat threadId={threadId} />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/knowledge-base" element={<KnowledgeBase />} />
+            <Route path="/system-check" element={<SystemStatus />} />
             <Route path="*" element={<Navigate to="/chat" replace />} />
           </Routes>
         </main>

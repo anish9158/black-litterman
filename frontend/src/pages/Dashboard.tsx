@@ -66,7 +66,7 @@ const HERO_STATS = [
 ];
 
 const CHART_CAPTIONS = [
-  "Cumulative returns: BL portfolio (All-50) vs NIFTY 50 benchmark over 5-year backtest",
+  "Cumulative returns: BL portfolio (All-50) vs NIFTY 50 benchmark — July 2020–July 2025 (~5-year window)",
   "Sensitivity heatmap: portfolio allocation vs view multiplier s (0.5 → 1.5)",
   "Top-ticker weights vs view multiplier s — ICICIBANK and BAJFINANCE gain weight as conviction increases",
 ];
@@ -96,7 +96,7 @@ export default function Dashboard() {
         {/* Page header */}
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold text-foreground">Backtest Results & AI Architecture</h1>
-          <Badge variant="indigo">Pre-computed · 2019–2024</Badge>
+          <Badge variant="indigo">Jul 2020 – Jul 2025</Badge>
           <Badge variant="outline" className="text-[10px]">NIFTY 50 benchmark</Badge>
         </div>
 
