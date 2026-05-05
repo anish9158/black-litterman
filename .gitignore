@@ -6,6 +6,7 @@ backend/__pycache__/
 backend/.env
 backend/rag_index/
 backend/rag_docs/**/*.pdf
+backend/logs/
 
 frontend/node_modules/
 frontend/dist/

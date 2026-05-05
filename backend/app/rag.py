@@ -16,6 +16,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .config import load_settings
+from .llm_audit import log_llm_call
 
 try:
     from langchain_openai import ChatOpenAI
@@ -367,6 +368,14 @@ def _generate_follow_ups(answer: str, question: str, api_key: str) -> List[str]:
             f"Q: {question}\nA: {answer[:500]}"
         )
         raw = llm.invoke([("human", prompt)]).content.strip()
+        log_llm_call(
+            stage="rag_follow_up_suggestions",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=prompt,
+            input_artifacts=["backend/rag_docs/"],
+            output_artifact="",
+        )
         # Extract JSON array robustly
         start = raw.find("[")
         end = raw.rfind("]") + 1
@@ -436,6 +445,23 @@ def ask_rag(
             prompt.format_messages(question=question, context=context, history=history_text)
         )
         answer = msg.content
+        audit_text = (
+            _SYSTEM_PROMPT.strip()
+            + "\nQuestion: "
+            + question
+            + "\nConversation history:\n"
+            + history_text
+            + "\nRetrieved context:\n"
+            + context
+        )
+        log_llm_call(
+            stage="rag_chat",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=audit_text,
+            input_artifacts=["backend/rag_docs/"],
+            output_artifact="",
+        )
         # Extract token usage from response metadata (Groq returns this)
         usage = getattr(msg, "response_metadata", {}).get("token_usage", {})
         if usage:
@@ -538,7 +564,16 @@ def generate_narrative(
             base_url=settings.llm_base_url,
             temperature=0.3,
         )
-        return llm.invoke([("human", prompt)]).content
+        content = llm.invoke([("human", prompt)]).content
+        log_llm_call(
+            stage="portfolio_narrative",
+            provider="groq",
+            model=settings.groq_model,
+            prompt_material=prompt,
+            input_artifacts=[],
+            output_artifact="",
+        )
+        return content
     except Exception:
         return ""
 
@@ -620,6 +655,23 @@ def ask_rag_stream(
         yield f"data: {_json.dumps({'token': f'[Error: {exc}]'})}\n\n"
 
     latency_ms = round((_time.time() - t0) * 1000)
+    stream_audit_text = (
+        _SYSTEM_PROMPT.strip()
+        + "\nQuestion: "
+        + question
+        + "\nConversation history:\n"
+        + history_text
+        + "\nRetrieved context:\n"
+        + context
+    )
+    log_llm_call(
+        stage="rag_chat_stream",
+        provider="groq",
+        model=settings.groq_model,
+        prompt_material=stream_audit_text,
+        input_artifacts=["backend/rag_docs/"],
+        output_artifact="",
+    )
     # Estimate token counts from character count (≈4 chars per token)
     prompt_est = len(context) // 4
     completion_est = len(full_answer) // 4
